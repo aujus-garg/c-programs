@@ -2,10 +2,7 @@
 #include <stdlib.h>
 
 int main() {
-    int i = 100;
-    int *pointer = NULL;
-    pointer = &i;
-    printf("The value pointer points to is %d\n", *pointer);
-    *pointer = 200;
-    printf("Pointer now points to %d\n", *pointer);
+    for(int i = 0;  i <= 10; i++) {
+        printf("%d\n", i);
+    }
 }
