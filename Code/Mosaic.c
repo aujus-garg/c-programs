@@ -10,14 +10,33 @@ void print_buffer(const unsigned char* buf, size_t len) {
   size_t offset = 0;
   for (unsigned int i = 0; i < len; i++) {
     if (i % 8 == 0 && offset > 0) {
-      printf("%s\n", output);
+      printf("[%08x] %s\n", i / 8 * 8, output);
       offset = 0;
     }
     offset += snprintf(&output[offset], sizeof(output) - offset, "0x%02x, ",
                        (unsigned char)buf[i]);
   }
   if (offset > 0) {
-    printf("%s\n", output);
+    printf("[%08lx] %s\n", len / 8 * 8, output);
+  }
+}
+
+struct avgCol {
+  int r;
+  int g;
+  int b;
+  int a;
+};
+
+void colAdd(struct avgCol* total, unsigned char bufferCol, int rgbaSelect) {
+  if (rgbaSelect == 0) {
+    total->r += bufferCol;
+  } else if (rgbaSelect == 1) {
+    total->g += bufferCol;
+  } else if (rgbaSelect == 2) {
+    total->b += bufferCol;
+  } else if (rgbaSelect == 3) {
+    total->a += bufferCol;
   }
 }
 
@@ -25,12 +44,14 @@ void recon_sub(unsigned char* buffer,
                int scanlineIndex,
                int scanlinePixelCount,
                int pixelByteCount,
-               int print) {
+               int print,
+               struct avgCol* total) {
   int scanlineLen = scanlinePixelCount * pixelByteCount + 1;
   int scanlineStart = scanlineIndex * scanlineLen;
   if (buffer[scanlineStart] != 1) {
     return;
   }
+
   for (int i = scanlineStart + 1 + pixelByteCount;
        i < scanlineStart + scanlineLen; i++) {
     if (print == 2) {
@@ -40,6 +61,7 @@ void recon_sub(unsigned char* buffer,
           buffer[i - pixelByteCount]);
     }
     buffer[i] += buffer[i - pixelByteCount];
+    colAdd(total, buffer[i], (i - scanlineStart - 1) % pixelByteCount);
   }
 }
 
@@ -47,7 +69,8 @@ void recon_up(unsigned char* buffer,
               int scanlineIndex,
               int scanlinePixelCount,
               int pixelByteCount,
-              int print) {
+              int print,
+              struct avgCol* total) {
   int scanlineLen = scanlinePixelCount * pixelByteCount + 1;
   int scanlineStart = scanlineIndex * scanlineLen;
   if (buffer[scanlineStart] != 2) {
@@ -62,6 +85,7 @@ void recon_up(unsigned char* buffer,
           buffer[i - pixelByteCount]);
     }
     buffer[i] += buffer[i - scanlineLen];
+    colAdd(total, buffer[i], (i - scanlineStart - 1) % pixelByteCount);
   }
 }
 
@@ -69,15 +93,18 @@ void recon_avg(unsigned char* buffer,
                int scanlineIndex,
                int scanlinePixelCount,
                int pixelByteCount,
-               int print) {
+               int print,
+               struct avgCol* total) {
   int scanlineLen = scanlinePixelCount * pixelByteCount + 1;
   int scanlineStart = scanlineIndex * scanlineLen;
   if (buffer[scanlineStart] != 3) {
     return;
   }
+
   for (int i = 0; i < pixelByteCount; i++) {
     buffer[scanlineStart + 1 + i] +=
         buffer[scanlineStart + 1 + i - scanlineLen] / 2;
+    colAdd(total, buffer[scanlineStart + 1 + i], i);
   }
   for (int i = scanlineStart + 1 + pixelByteCount;
        i < scanlineStart + scanlineLen; i++) {
@@ -90,6 +117,7 @@ void recon_avg(unsigned char* buffer,
     int x =
         ((int)buffer[i - pixelByteCount] + (int)buffer[i - scanlineLen]) / 2;
     buffer[i] += x;
+    colAdd(total, buffer[i], (i - scanlineStart - 1) % pixelByteCount);
   }
 }
 
@@ -110,7 +138,8 @@ void recon_paeth(unsigned char* buffer,
                  int scanlineIndex,
                  int scanlinePixelCount,
                  int pixelByteCount,
-                 int print) {
+                 int print,
+                 struct avgCol* total) {
   int scanlineLen = scanlinePixelCount * pixelByteCount + 1;
   int scanlineStart = scanlineIndex * scanlineLen;
   if (buffer[scanlineStart] != 4) {
@@ -120,6 +149,7 @@ void recon_paeth(unsigned char* buffer,
     unsigned char b = buffer[scanlineStart + 1 + i - scanlineLen];
     unsigned char x = buffer[scanlineStart + 1 + i] + paeth_predict(0, b, 0);
     buffer[scanlineStart + 1 + i] = x;
+    colAdd(total, buffer[scanlineStart + 1 + i], i);
   }
   for (int i = scanlineStart + 1 + pixelByteCount;
        i < scanlineStart + scanlineLen; i++) {
@@ -134,6 +164,7 @@ void recon_paeth(unsigned char* buffer,
     unsigned char c = buffer[i - pixelByteCount - scanlineLen];
     unsigned char x = buffer[i] + paeth_predict(a, b, c);
     buffer[i] = x;
+    colAdd(total, buffer[i], (i - scanlineStart - 1) % pixelByteCount);
   }
 }
 
@@ -142,7 +173,8 @@ void recon_image(unsigned char* inflatedBuffer,
                  int scanlineCount,
                  int bytePerPixel,
                  int print,
-                 FILE* inflatedMosaic) {
+                 FILE* inflatedMosaic,
+                 struct avgCol* total) {
   int scanlineLen = pixelPerScanline * bytePerPixel + 1;
   for (int scanlineIndex = 0; scanlineIndex < scanlineCount; scanlineIndex++) {
     int scanlineStart = scanlineLen * scanlineIndex;
@@ -152,27 +184,28 @@ void recon_image(unsigned char* inflatedBuffer,
     }
     if (filter_type == 1) {
       recon_sub(inflatedBuffer, scanlineIndex, pixelPerScanline, bytePerPixel,
-                print);
+                print, total);
     } else if (filter_type == 2) {
       recon_up(inflatedBuffer, scanlineIndex, pixelPerScanline, bytePerPixel,
-               print);
+               print, total);
     } else if (filter_type == 3) {
       recon_avg(inflatedBuffer, scanlineIndex, pixelPerScanline, bytePerPixel,
-                print);
+                print, total);
     } else if (filter_type == 4) {
       recon_paeth(inflatedBuffer, scanlineIndex, pixelPerScanline, bytePerPixel,
-                  print);
+                  print, total);
     } else if (filter_type != 0) {
       printf("Unknown filter type: %d\n", filter_type);
     }
     size_t written = fwrite(&inflatedBuffer[scanlineStart + 1], 1,
                             scanlineLen - 1, inflatedMosaic);
     if (print >= 1) {
-      printf("Wrote %zu bytes\n", written);
+      printf("Filter type %d, wrote %zu bytes\n", filter_type, written);
     }
   }
 }
 
+/*
 void test() {
   unsigned char result[] = {0, 5, 2, 4, 3, 4, 3, 2, 5, 6, 4, 2, 3, 4, 5};
   const unsigned char expected[] = {0, 5,  2, 4, 3, 4, 3, 4,
@@ -184,6 +217,7 @@ void test() {
   printf("Expected:\n");
   print_buffer(expected, 15);
 }
+*/
 
 int main(int argc, char* argv[]) {
   if (argc < 3) {
@@ -225,7 +259,16 @@ int main(int argc, char* argv[]) {
   int bytePerPixel = 0;
   int pixelPerScanline = 0;
   int scanlineCount = 0;
+  int bytesPerScanline = 0;
   int ret;
+
+  struct avgCol total;
+  total.r = 0;
+  total.g = 0;
+  total.b = 0;
+  total.a = 0;
+
+  int processed_out = 0;
 
   z_stream strm;
   strm.zalloc = Z_NULL;
@@ -233,6 +276,8 @@ int main(int argc, char* argv[]) {
   strm.opaque = Z_NULL;
   strm.avail_in = 0;
   strm.next_in = Z_NULL;
+  strm.total_out = 0;
+  strm.total_in = 0;
 
   ret = inflateInit(&strm);
   if (ret != Z_OK) {
@@ -283,31 +328,44 @@ int main(int argc, char* argv[]) {
         printf("PNG dimensions: %d * %d\n", pixelPerScanline, scanlineCount);
         printf("Color Type: %d\n", buffer[i + 17]);
         printf("Bit Depth: %d\n", buffer[i + 16]);
+        printf("Bytes per pixel: %d\n", bytePerPixel);
       }
-      inflatedBuffer = (unsigned char*)malloc(
-          pixelPerScanline * scanlineCount * bytePerPixel + scanlineCount);
+      bytesPerScanline = pixelPerScanline * bytePerPixel + 1;
+      inflatedBuffer = (unsigned char*)malloc(bytesPerScanline * scanlineCount);
     } else if (memcmp(&buffer[i + 4], "IDAT", 4) == 0) {
       if (inflatedBuffer == NULL) {
         printf("No header chunk\n");
         return 1;
       }
 
-      strm.next_in = &buffer[8 + i];
+      strm.next_in = &buffer[i + 8];
       strm.avail_in = chunkDataLength;
-      strm.next_out = inflatedBuffer;
+      strm.next_out = &inflatedBuffer[strm.total_out];
       strm.avail_out =
-          pixelPerScanline * scanlineCount * bytePerPixel + scanlineCount;
+          bytesPerScanline * scanlineCount + scanlineCount - strm.total_out;
 
       ret = inflate(&strm, Z_NO_FLUSH);
+      if (strm.total_out - processed_out > bytesPerScanline) {
+        int numLines = (strm.total_out - processed_out) / bytesPerScanline;
+        recon_image(&inflatedBuffer[processed_out], pixelPerScanline, numLines,
+                    bytePerPixel, print, inflatedMosaic, &total);
+        processed_out += numLines * bytesPerScanline;
+      }
+
       if (ret == Z_STREAM_END) {
         inflateEnd(&strm);
-        recon_image(inflatedBuffer, pixelPerScanline, scanlineCount,
-                    bytePerPixel, print, inflatedMosaic);
       } else if (ret != Z_OK) {
         inflateEnd(&strm);
         printf("Failed to decompress the buffer. Exiting... ERRNO %d\n", ret);
         return 1;
       }
+      int pixelCount = pixelPerScanline * scanlineCount;
+      total.r = total.r / pixelCount;
+      total.g = total.g / pixelCount;
+      total.b = total.b / pixelCount;
+      total.a = total.a / pixelCount;
+      printf("The RGB(A) is %d %d %d (%d)\n", total.r, total.g, total.b,
+             total.a);
     }
     i += chunkDataLength;
   }
