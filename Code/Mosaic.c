@@ -6,11 +6,11 @@
 #include <string.h>
 #include <zlib.h>
 
-#define SEGMENT_DIMENSION (16)
+#define SEGMENT_DIMENSION (8)
 
 int debugMosaic = 0;
 
-void print_buffer(const unsigned char* buf, size_t len) {
+void printBuffer(const unsigned char* buf, size_t len) {
   char output[50];
   size_t offset = 0;
   for (unsigned int i = 0; i < len; i++) {
@@ -26,17 +26,17 @@ void print_buffer(const unsigned char* buf, size_t len) {
   }
 }
 
-struct avgCol {
+struct AverageColor {
   int r;
   int g;
   int b;
   int a;
 };
 
-void colAdd(struct avgCol* color,
-            unsigned char bufferCol,
-            int byteLoc,
-            int pixelByteCount) {
+void aggregateColors(struct AverageColor* color,
+                     unsigned char bufferCol,
+                     int byteLoc,
+                     int pixelByteCount) {
   int rgbaSelect = byteLoc % pixelByteCount;
   switch (rgbaSelect) {
     case (0):
@@ -54,6 +54,25 @@ void colAdd(struct avgCol* color,
   }
 }
 
+struct node;
+
+struct node {
+  struct AverageColor sourceTotal;
+  struct node* next;
+};
+
+struct node* head = NULL;
+
+void insertNode(struct AverageColor sourceTotal) {
+  struct node* new_node = (struct node*)malloc(sizeof(struct node));
+  new_node->sourceTotal.r = sourceTotal.r;
+  new_node->sourceTotal.g = sourceTotal.g;
+  new_node->sourceTotal.b = sourceTotal.b;
+  new_node->sourceTotal.a = sourceTotal.a;
+  new_node->next = head;
+  head = new_node;
+}
+
 char* pngPath(char* directoryPath, char* pngName) {
   int pathSize = strlen(directoryPath) + strlen(pngName) + 2;
   char* imagePath = malloc(pathSize);
@@ -61,7 +80,17 @@ char* pngPath(char* directoryPath, char* pngName) {
   return imagePath;
 }
 
-int rgbaDistance(struct avgCol sourceRGBA, struct avgCol targetRGBA) {
+char* pixelizedPath(char* directoryPath, struct AverageColor pixelizedTotal) {
+  int pixelizedPathLen = strlen(directoryPath) + 21;
+  char* pixelizedImagePath = malloc(pixelizedPathLen);
+  snprintf(pixelizedImagePath, pixelizedPathLen, "%s/%d_%d_%d_%d.raw",
+           directoryPath, pixelizedTotal.r, pixelizedTotal.g, pixelizedTotal.b,
+           pixelizedTotal.a);
+  return pixelizedImagePath;
+}
+
+int rgbaDistance(struct AverageColor sourceRGBA,
+                 struct AverageColor targetRGBA) {
   return sqrt(pow(targetRGBA.r - sourceRGBA.r, 2) +
               pow(targetRGBA.g - sourceRGBA.g, 2) +
               pow(targetRGBA.b - sourceRGBA.b, 2));
@@ -102,20 +131,20 @@ int calculateSegmentIndex(int bytePosition,
   return index;
 }
 
-void recon_sub(unsigned char* scanline,
-               int scanlinePixelCount,
-               int pixelByteCount,
-               struct avgCol* segments,
-               int lineNum) {
+void reconSub(unsigned char* scanline,
+              int scanlinePixelCount,
+              int pixelByteCount,
+              struct AverageColor* segments,
+              int lineNum) {
   int scanlineLen = scanlinePixelCount * pixelByteCount + 1;
   if (scanline[0] != 1) {
     return;
   }
 
   for (int i = 0; i < pixelByteCount; i++) {
-    struct avgCol* segment = &segments[calculateSegmentIndex(
+    struct AverageColor* segment = &segments[calculateSegmentIndex(
         i, pixelByteCount, SEGMENT_DIMENSION, lineNum, scanlinePixelCount)];
-    colAdd(segment, scanline[i + 1], i, pixelByteCount);
+    aggregateColors(segment, scanline[i + 1], i, pixelByteCount);
   }
 
   for (int i = 1 + pixelByteCount; i < scanlineLen; i++) {
@@ -124,18 +153,18 @@ void recon_sub(unsigned char* scanline,
              pixelByteCount, scanline[i], scanline[i - pixelByteCount]);
     }
     scanline[i] += scanline[i - pixelByteCount];
-    struct avgCol* segment = &segments[calculateSegmentIndex(
+    struct AverageColor* segment = &segments[calculateSegmentIndex(
         i - 1, pixelByteCount, SEGMENT_DIMENSION, lineNum, scanlinePixelCount)];
-    colAdd(segment, scanline[i], i - 1, pixelByteCount);
+    aggregateColors(segment, scanline[i], i - 1, pixelByteCount);
   }
 }
 
-void recon_up(unsigned char* curScanline,
-              unsigned char* prevScanline,
-              int scanlinePixelCount,
-              int pixelByteCount,
-              struct avgCol* segments,
-              int lineNum) {
+void reconUp(unsigned char* curScanline,
+             unsigned char* prevScanline,
+             int scanlinePixelCount,
+             int pixelByteCount,
+             struct AverageColor* segments,
+             int lineNum) {
   int scanlineLen = scanlinePixelCount * pixelByteCount + 1;
   if (curScanline[0] != 2) {
     return;
@@ -147,18 +176,18 @@ void recon_up(unsigned char* curScanline,
              pixelByteCount, curScanline[i], prevScanline[i]);
     }
     curScanline[i] += prevScanline[i];
-    struct avgCol* segment = &segments[calculateSegmentIndex(
+    struct AverageColor* segment = &segments[calculateSegmentIndex(
         i - 1, pixelByteCount, SEGMENT_DIMENSION, lineNum, scanlinePixelCount)];
-    colAdd(segment, curScanline[i], i - 1, pixelByteCount);
+    aggregateColors(segment, curScanline[i], i - 1, pixelByteCount);
   }
 }
 
-void recon_avg(unsigned char* curScanline,
-               unsigned char* prevScanline,
-               int scanlinePixelCount,
-               int pixelByteCount,
-               struct avgCol* segments,
-               int lineNum) {
+void reconAvg(unsigned char* curScanline,
+              unsigned char* prevScanline,
+              int scanlinePixelCount,
+              int pixelByteCount,
+              struct AverageColor* segments,
+              int lineNum) {
   int scanlineLen = scanlinePixelCount * pixelByteCount + 1;
   if (curScanline[0] != 3) {
     return;
@@ -166,9 +195,9 @@ void recon_avg(unsigned char* curScanline,
 
   for (int i = 0; i < pixelByteCount; i++) {
     curScanline[1 + i] += prevScanline[1 + i] / 2;
-    struct avgCol* segment = &segments[calculateSegmentIndex(
+    struct AverageColor* segment = &segments[calculateSegmentIndex(
         i, pixelByteCount, SEGMENT_DIMENSION, lineNum, scanlinePixelCount)];
-    colAdd(segment, curScanline[i + 1], i, pixelByteCount);
+    aggregateColors(segment, curScanline[i + 1], i, pixelByteCount);
   }
   for (int i = 1 + pixelByteCount; i < scanlineLen; i++) {
     if (debugMosaic >= 2) {
@@ -177,13 +206,13 @@ void recon_avg(unsigned char* curScanline,
     }
     int x = ((int)curScanline[i - pixelByteCount] + (int)prevScanline[i]) / 2;
     curScanline[i] += x;
-    struct avgCol* segment = &segments[calculateSegmentIndex(
+    struct AverageColor* segment = &segments[calculateSegmentIndex(
         i - 1, pixelByteCount, SEGMENT_DIMENSION, lineNum, scanlinePixelCount)];
-    colAdd(segment, curScanline[i], i - 1, pixelByteCount);
+    aggregateColors(segment, curScanline[i], i - 1, pixelByteCount);
   }
 }
 
-unsigned char paeth_predict(unsigned char a, unsigned char b, unsigned char c) {
+unsigned char paethPredict(unsigned char a, unsigned char b, unsigned char c) {
   int p = a + b - c;
   unsigned int pa = abs(p - a);
   unsigned int pb = abs(p - b);
@@ -196,23 +225,23 @@ unsigned char paeth_predict(unsigned char a, unsigned char b, unsigned char c) {
   return c;
 }
 
-void recon_paeth(unsigned char* curScanline,
-                 unsigned char* prevScanline,
-                 int scanlinePixelCount,
-                 int pixelByteCount,
-                 struct avgCol* segments,
-                 int lineNum) {
+void reconPaeth(unsigned char* curScanline,
+                unsigned char* prevScanline,
+                int scanlinePixelCount,
+                int pixelByteCount,
+                struct AverageColor* segments,
+                int lineNum) {
   int scanlineLen = scanlinePixelCount * pixelByteCount + 1;
   if (curScanline[0] != 4) {
     return;
   }
   for (int i = 0; i < pixelByteCount; i++) {
     unsigned char b = prevScanline[1 + i];
-    unsigned char x = curScanline[1 + i] + paeth_predict(0, b, 0);
+    unsigned char x = curScanline[1 + i] + paethPredict(0, b, 0);
     curScanline[1 + i] = x;
-    struct avgCol* segment = &segments[calculateSegmentIndex(
+    struct AverageColor* segment = &segments[calculateSegmentIndex(
         i, pixelByteCount, SEGMENT_DIMENSION, lineNum, scanlinePixelCount)];
-    colAdd(segment, curScanline[i + 1], i, pixelByteCount);
+    aggregateColors(segment, curScanline[i + 1], i, pixelByteCount);
   }
   for (int i = 1 + pixelByteCount; i < scanlineLen; i++) {
     if (debugMosaic >= 2) {
@@ -222,22 +251,21 @@ void recon_paeth(unsigned char* curScanline,
     unsigned char a = curScanline[i - pixelByteCount];
     unsigned char b = prevScanline[i];
     unsigned char c = prevScanline[i - pixelByteCount];
-    unsigned char x = curScanline[i] + paeth_predict(a, b, c);
+    unsigned char x = curScanline[i] + paethPredict(a, b, c);
     curScanline[i] = x;
-    struct avgCol* segment = &segments[calculateSegmentIndex(
+    struct AverageColor* segment = &segments[calculateSegmentIndex(
         i - 1, pixelByteCount, SEGMENT_DIMENSION, lineNum, scanlinePixelCount)];
-    colAdd(segment, curScanline[i], i - 1, pixelByteCount);
+    aggregateColors(segment, curScanline[i], i - 1, pixelByteCount);
   }
 }
 
-int recon_image(unsigned char* newScanline,
-                unsigned char* prevScanline,
-                int pixelPerScanline,
-                int bytePerPixel,
-                /*FILE* inflatedMosaic,*/
-                struct avgCol* segments,
-                int lineNum,
-                int arrayXVal) {
+int reconImage(unsigned char* newScanline,
+               unsigned char* prevScanline,
+               int pixelPerScanline,
+               int bytePerPixel,
+               struct AverageColor* segments,
+               int lineNum,
+               int arrayXVal) {
   int scanlineLen = pixelPerScanline * bytePerPixel + 1;
   unsigned char filter_type = newScanline[0];
   if (debugMosaic >= 2) {
@@ -253,30 +281,25 @@ int recon_image(unsigned char* newScanline,
     case 0:
       break;
     case 1:
-      recon_sub(newScanline, pixelPerScanline, bytePerPixel, segments, lineNum);
+      reconSub(newScanline, pixelPerScanline, bytePerPixel, segments, lineNum);
       break;
     case 2:
-      recon_up(newScanline, prevScanline, pixelPerScanline, bytePerPixel,
-               segments, lineNum);
+      reconUp(newScanline, prevScanline, pixelPerScanline, bytePerPixel,
+              segments, lineNum);
       break;
     case 3:
-      recon_avg(newScanline, prevScanline, pixelPerScanline, bytePerPixel,
-                segments, lineNum);
+      reconAvg(newScanline, prevScanline, pixelPerScanline, bytePerPixel,
+               segments, lineNum);
       break;
     case 4:
-      recon_paeth(newScanline, prevScanline, pixelPerScanline, bytePerPixel,
-                  segments, lineNum);
+      reconPaeth(newScanline, prevScanline, pixelPerScanline, bytePerPixel,
+                 segments, lineNum);
       break;
     default:
       printf("Unknown filter type: %d\n", filter_type);
       return 1;
   };
 
-  /* size_t written =
-       fwrite(&newScanline[0 + 1], 1, scanlineLen - 1, inflatedMosaic);
-   if (debugMosaic >= 2) {
-     printf("Filter type %d, wrote %zu bytes\n", filter_type, written);
-   } */
   return 0;
 }
 
@@ -291,7 +314,7 @@ int processHeaderChunk(int* pixelPerScanline,
                        /*FILE* inflatedMosaic,*/
                        int* bytesPerScanline,
                        unsigned char* inflatedBuffer,
-                       struct avgCol* segments) {
+                       struct AverageColor* segments) {
   memcpy(pixelPerScanline, &buffer[i + 8], sizeof(int));
   *pixelPerScanline = ntohl(*pixelPerScanline);
   memcpy(scanlineCount, &buffer[i + 12], sizeof(int));
@@ -338,8 +361,7 @@ int processIDATChunk(unsigned char* inflatedBuffer,
                      int* scanlineFilled,
                      int pixelPerScanline,
                      int bytePerPixel,
-                     /*FILE* inflatedMosaic,*/
-                     struct avgCol* segments,
+                     struct AverageColor* segments,
                      int arrayXVal,
                      FILE* mosaicOriginal) {
   if (inflatedBuffer == NULL) {
@@ -365,9 +387,9 @@ int processIDATChunk(unsigned char* inflatedBuffer,
     int ret = inflate(strm, Z_NO_FLUSH);
     scanlineOffset = strm->total_out - lineNumber * bytesPerScanline;
     if (scanlineOffset >= bytesPerScanline) {
-      if (recon_image(curScanline, prevScanline, pixelPerScanline, bytePerPixel,
-                      /*inflatedMosaic,*/ segments, lineNumber,
-                      arrayXVal) == 1) {
+      if (reconImage(curScanline, prevScanline, pixelPerScanline, bytePerPixel,
+                     /*inflatedMosaic,*/ segments, lineNumber,
+                     arrayXVal) == 1) {
         return 1;
       }
       lineNumber++;
@@ -393,8 +415,10 @@ int processIDATChunk(unsigned char* inflatedBuffer,
 }
 
 int processPNG(FILE* mosaicOriginal,
-               struct avgCol** final_segments,
-               struct avgCol* total) {
+               struct AverageColor** final_segments,
+               struct AverageColor* total,
+               int* arrayXVal,
+               int* arrayYVal) {
   fseek(mosaicOriginal, 0L, SEEK_END);
   int fileLen = ftell(mosaicOriginal);
   rewind(mosaicOriginal);
@@ -410,15 +434,13 @@ int processPNG(FILE* mosaicOriginal,
   int chunkCount = 0;
   int chunkDataLength;
   int bytePerPixel = 0;
+  int bytesPerScanline = 0;
   int pixelPerScanline = 0;
   int scanlineCount = 0;
-  int bytesPerScanline = 0;
   int lineNum = 0;
-  int arrayXVal = 0;
-  int arrayYVal = 0;
   int ret;
   int scanlineFilled = 0;
-  struct avgCol* segments = NULL;
+  struct AverageColor* segments = NULL;
 
   z_stream strm;
   strm.zalloc = Z_NULL;
@@ -453,19 +475,18 @@ int processPNG(FILE* mosaicOriginal,
       }
 
       if (processHeaderChunk(&pixelPerScanline, buffer, i, &scanlineCount,
-                             &arrayXVal, &arrayYVal, &bytePerPixel,
-                             mosaicOriginal,
-                             /*inflatedMosaic,*/ &bytesPerScanline,
-                             inflatedBuffer, segments) != 0) {
+                             arrayXVal, arrayYVal, &bytePerPixel,
+                             mosaicOriginal, &bytesPerScanline, inflatedBuffer,
+                             segments) != 0) {
         free(buffer);
         return 1;
       }
 
       inflatedBuffer = (unsigned char*)malloc(bytesPerScanline * 2);
-      int size = sizeof(struct avgCol) * arrayXVal * arrayYVal;
-      segments = (struct avgCol*)malloc(size);
+      int size = sizeof(struct AverageColor) * *arrayXVal * *arrayYVal;
+      segments = (struct AverageColor*)malloc(size);
       if (debugMosaic >= 2) {
-        printf("x %d, y %d, size %d, ptr %p\n", arrayXVal, arrayYVal, size,
+        printf("x %d, y %d, size %d, ptr %p\n", *arrayXVal, *arrayYVal, size,
                segments);
       }
       memset(segments, 0, size);
@@ -477,8 +498,7 @@ int processPNG(FILE* mosaicOriginal,
       if (processIDATChunk(inflatedBuffer, &strm, buffer, i, chunkDataLength,
                            &lineNum, scanlineCount, bytesPerScanline,
                            &scanlineFilled, pixelPerScanline, bytePerPixel,
-                           /*inflatedMosaic,*/ segments, arrayXVal,
-                           mosaicOriginal) != 0) {
+                           segments, *arrayXVal, mosaicOriginal) != 0) {
         if (inflatedBuffer != NULL) {
           free(inflatedBuffer);
         }
@@ -493,7 +513,7 @@ int processPNG(FILE* mosaicOriginal,
     printf("The chunk count is: %d\n\n", chunkCount);
   }
   int pixelsPerSegment = SEGMENT_DIMENSION * SEGMENT_DIMENSION;
-  for (int i = 0; i < arrayXVal * arrayYVal; i++) {
+  for (int i = 0; i < *arrayXVal * *arrayYVal; i++) {
     segments[i].r = segments[i].r / pixelsPerSegment;
     segments[i].g = segments[i].g / pixelsPerSegment;
     segments[i].b = segments[i].b / pixelsPerSegment;
@@ -502,25 +522,19 @@ int processPNG(FILE* mosaicOriginal,
       printf("[%d] %d %d %d (%d)\n", i, segments[i].r, segments[i].g,
              segments[i].b, segments[i].a);
     }
-    /* fwrite(&segments[i].r, 1, 1, pixelizedImage);
-       fwrite(&segments[i].g, 1, 1, pixelizedImage);
-       fwrite(&segments[i].b, 1, 1, pixelizedImage);
-       if (bytePerPixel == 4) {
-         fwrite(&segments[i].a, 1, 1, pixelizedImage);
-       } */
   }
 
-  memset(total, 0, sizeof(struct avgCol));
-  for (int i = 0; i < arrayXVal * arrayYVal; i++) {
+  memset(total, 0, sizeof(struct AverageColor));
+  for (int i = 0; i < *arrayXVal * *arrayYVal; i++) {
     total->r += segments[i].r;
     total->g += segments[i].g;
     total->b += segments[i].b;
     total->a += segments[i].a;
   }
-  total->r = total->r / (arrayXVal * arrayYVal);
-  total->g = total->g / (arrayXVal * arrayYVal);
-  total->b = total->b / (arrayXVal * arrayYVal);
-  total->a = total->a / (arrayXVal * arrayYVal);
+  total->r = total->r / (*arrayXVal * *arrayYVal);
+  total->g = total->g / (*arrayXVal * *arrayYVal);
+  total->b = total->b / (*arrayXVal * *arrayYVal);
+  total->a = total->a / (*arrayXVal * *arrayYVal);
   if (debugMosaic >= 1) {
     printf("The RGB(A) of source is %d %d %d (%d)\n\n", total->r, total->g,
            total->b, total->a);
@@ -535,15 +549,15 @@ int processPNG(FILE* mosaicOriginal,
 }
 
 int main(int argc, char* argv[]) {
-  if (argc < 4) {
+  if (argc < 5) {
     printf("Not enough arguments\n");
     return 1;
   }
 
-  if (argc >= 5) {
-    if (strcmp(argv[4], "debug1") == 0) {
+  if (argc >= 6) {
+    if (strcmp(argv[5], "debug1") == 0) {
       debugMosaic = 1;
-    } else if (strcmp(argv[4], "debug2") == 0) {
+    } else if (strcmp(argv[5], "debug2") == 0) {
       debugMosaic = 2;
     }
   }
@@ -555,39 +569,25 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  /* FILE* inflatedMosaic =
-     fopen("/Users/aujus.garg/github/testing_files/test.raw", "wb");
- if (inflatedMosaic == NULL) {
-   printf(
-       "File /Users/aujus.garg/github/testing_files/test.raw could not be "
-       "opened\n");
-   return 1;
- }
+  struct AverageColor* targetSegments = NULL;
+  struct AverageColor targetTotal;
+  int targetArrayXVal = 0;
+  int targetArrayYVal = 0;
 
-
-  FILE* pixelizedImage =
-      fopen("/Users/aujus.garg/github/testing_files/pixelimage.raw", "wb");
-  if (pixelizedImage == NULL) {
-    printf(
-        "File /Users/aujus.garg/github/testing_files/pixelimage.raw could not "
-        "be opened");
-    return 1;
-  } */
-
-  struct avgCol* targetSegments = NULL;
-  struct avgCol targetTotal;
-
-  if (processPNG(mosaicOriginal, &targetSegments, &targetTotal) != 0) {
+  if (processPNG(mosaicOriginal, &targetSegments, &targetTotal,
+                 &targetArrayXVal, &targetArrayYVal) != 0) {
     fclose(mosaicOriginal);
     return 1;
   }
+  fclose(mosaicOriginal);
 
   DIR* sourceDirStream = opendir(argv[1]);
   if (sourceDirStream == NULL) {
     printf("Directory not found\n");
-    fclose(mosaicOriginal);
     return 1;
   }
+  int sourceArrayXVal = 0;
+  int sourceArrayYVal = 0;
   struct dirent* sourceDirent = readdir(sourceDirStream);
   for (; sourceDirent != NULL; sourceDirent = readdir(sourceDirStream)) {
     if (strcmp(&sourceDirent->d_name[sourceDirent->d_namlen - 4], ".png") ==
@@ -601,22 +601,112 @@ int main(int argc, char* argv[]) {
       free(imagePath);
       if (sourcePNG == NULL) {
         printf("A source file could not be opened\n");
+        closedir(sourceDirStream);
+        free(targetSegments);
         return 1;
       }
-      struct avgCol* sourceSegments = NULL;
-      struct avgCol sourceTotal;
-      if (processPNG(sourcePNG, &sourceSegments, &sourceTotal) != 0) {
+      struct AverageColor* sourceSegments = NULL;
+      struct AverageColor sourceTotal;
+
+      if (processPNG(sourcePNG, &sourceSegments, &sourceTotal, &sourceArrayXVal,
+                     &sourceArrayYVal) != 0) {
         fclose(sourcePNG);
         return 1;
+      }
+      if (targetArrayXVal == sourceArrayXVal &&
+          targetArrayYVal == sourceArrayYVal) {
+        insertNode(sourceTotal);
+        char* pixelizedSourcePath = pixelizedPath(argv[3], sourceTotal);
+        FILE* pixelizedSourceImage = fopen(pixelizedSourcePath, "wb");
+        free(pixelizedSourcePath);
+        if (pixelizedSourceImage == NULL) {
+          printf("A pixelized source file could not be opened\n");
+          fclose(sourcePNG);
+          free(sourceSegments);
+          free(targetSegments);
+          closedir(sourceDirStream);
+          return 1;
+        }
+        for (int i = 0; i < sourceArrayXVal * sourceArrayYVal; i++) {
+          fwrite(&sourceSegments[i].r, 1, 1, pixelizedSourceImage);
+          fwrite(&sourceSegments[i].g, 1, 1, pixelizedSourceImage);
+          fwrite(&sourceSegments[i].b, 1, 1, pixelizedSourceImage);
+        }
+        fclose(pixelizedSourceImage);
       }
       fclose(sourcePNG);
       free(sourceSegments);
     }
   }
-
   closedir(sourceDirStream);
-  fclose(mosaicOriginal);
-  free(targetSegments);
 
+  for (int targetSegCounter = 0;
+       targetSegCounter < targetArrayXVal * targetArrayYVal;
+       targetSegCounter++) {
+    if (debugMosaic >= 2) {
+      printf("%d %d %d\n", targetSegments[targetSegCounter].r,
+             targetSegments[targetSegCounter].g,
+             targetSegments[targetSegCounter].b);
+    }
+    int distance = 256;
+    struct AverageColor closestSource;
+    memset(&closestSource, 0, sizeof(struct AverageColor));
+    for (struct node* current = head; current != NULL;
+         current = current->next) {
+      int curDistance =
+          rgbaDistance(current->sourceTotal, targetSegments[targetSegCounter]);
+      if (curDistance < distance) {
+        distance = curDistance;
+        closestSource.r = current->sourceTotal.r;
+        closestSource.g = current->sourceTotal.g;
+        closestSource.b = current->sourceTotal.b;
+      }
+    }
+    targetSegments[targetSegCounter].r = closestSource.r;
+    targetSegments[targetSegCounter].g = closestSource.g;
+    targetSegments[targetSegCounter].b = closestSource.b;
+    if (debugMosaic >= 2) {
+      printf("%d %d %d\n\n", targetSegments[targetSegCounter].r,
+             targetSegments[targetSegCounter].g,
+             targetSegments[targetSegCounter].b);
+    }
+  }
+
+  char* rawImagePath = pngPath(argv[1], argv[4]);
+  FILE* rawMosaic = fopen(rawImagePath, "wb");
+  free(rawImagePath);
+  if (rawMosaic == NULL) {
+    printf("Unable to open raw mosaic file\n");
+    return 1;
+  }
+
+  unsigned char* buffer = (unsigned char*)malloc(sourceArrayXVal * 3);
+
+  for (int sourceYNumber = 0; sourceYNumber < targetArrayYVal;
+       sourceYNumber++) {
+    for (int sourceImageYLoc = 0; sourceImageYLoc < sourceArrayYVal;
+         sourceImageYLoc++) {
+      for (int sourceXNumber = 0; sourceXNumber < targetArrayXVal;
+           sourceXNumber++) {
+        char* sourcePath = pixelizedPath(
+            argv[3],
+            targetSegments[sourceXNumber + sourceYNumber * targetArrayXVal]);
+        FILE* sourceImage = fopen(sourcePath, "rb");
+        if (sourceImage == NULL) {
+          printf("Unable to reopen source image %s\n", sourcePath);
+          return 1;
+        }
+        free(sourcePath);
+        int bytesPerScanLine = sourceArrayXVal * 3;
+        fseek(sourceImage, bytesPerScanLine * sourceImageYLoc, SEEK_SET);
+        fread(buffer, 1, bytesPerScanLine, sourceImage);
+        fwrite(buffer, 1, bytesPerScanLine, rawMosaic);
+        fclose(sourceImage);
+      }
+    }
+  }
+
+  fclose(rawMosaic);
+  free(targetSegments);
   return 0;
 }
