@@ -8,7 +8,7 @@
 #include <string.h>
 #include <zlib.h>
 
-#define SEGMENT_DIMENSION (8)
+#define SEGMENT_DIMENSION (16)
 
 int debugMosaic = 0;
 
@@ -437,7 +437,6 @@ int processHeaderChunk(int* pixelPerScanline,
                        int* segCountY,
                        int* bytePerPixel,
                        FILE* mosaicOriginal,
-                       /*FILE* inflatedMosaic,*/
                        int* bytesPerScanline,
                        unsigned char* inflatedBuffer,
                        struct AverageColor* segments,
@@ -702,52 +701,29 @@ int processPNG(FILE* mosaicOriginal,
   return 0;
 }
 
-int main(int argc, char* argv[]) {
+int showDebug(int argc, char** argv) {
   if (argc < 6) {
     printf("Not enough arguments\n");
     return 1;
   }
-
-  if (argc >= 6) {
+  if (argc > 6) {
     if (strcmp(argv[6], "debug1") == 0) {
       debugMosaic = 1;
     } else if (strcmp(argv[6], "debug2") == 0) {
       debugMosaic = 2;
     }
   }
-  char* imagePath = pngPath(argv[1], argv[2]);
-  FILE* mosaicOriginal = fopen(imagePath, "rb");
-  free(imagePath);
-  if (mosaicOriginal == NULL) {
-    printf("Target file could not be opened\n");
-    return 1;
-  }
+  return 0;
+}
 
-  struct AverageColor* targetSegments = NULL;
-  struct AverageColor targetTotal;
-  int targetsegCountX = 0;
-  int targetsegCountY = 0;
-  int bytesPerPixel = 0;
-  int targetWidth = 0;
-  int targetHeight = 0;
-
-  if (processPNG(mosaicOriginal, &targetSegments, &targetTotal,
-                 &targetsegCountX, &targetsegCountY, &targetWidth,
-                 &targetHeight, &bytesPerPixel, true) != 0) {
-    fclose(mosaicOriginal);
-    return 1;
-  }
-  fclose(mosaicOriginal);
-
-  DIR* sourceDirStream = opendir(argv[1]);
-  if (sourceDirStream == NULL) {
-    printf("Directory not found\n");
-    return 1;
-  }
-
-  int sourcePixelX = 0;
-  int sourcePixelY = 0;
-
+int processSourceImages(char** argv,
+                        DIR* sourceDirStream,
+                        struct AverageColor* targetSegments,
+                        int targetWidth,
+                        int targetHeight,
+                        int* sourcePixelX,
+                        int* sourcePixelY,
+                        int bytesPerPixel) {
   struct dirent* sourceDirent = readdir(sourceDirStream);
   for (; sourceDirent != NULL; sourceDirent = readdir(sourceDirStream)) {
     if (strcmp(&sourceDirent->d_name[sourceDirent->d_namlen - 4], ".png") ==
@@ -756,7 +732,7 @@ int main(int argc, char* argv[]) {
         printf("Name of file is: %s[%d]\n", sourceDirent->d_name,
                sourceDirent->d_namlen);
       }
-      imagePath = pngPath(argv[1], sourceDirent->d_name);
+      char* imagePath = pngPath(argv[1], sourceDirent->d_name);
       FILE* sourcePNG = fopen(imagePath, "rb");
       free(imagePath);
       if (sourcePNG == NULL) {
@@ -781,8 +757,8 @@ int main(int argc, char* argv[]) {
       }
       if (targetWidth == sourceWidth && targetHeight == sourceHeight) {
         insertNode(sourceTotal);
-        sourcePixelX = sourcesegCountX;
-        sourcePixelY = sourcesegCountY;
+        *sourcePixelX = sourcesegCountX;
+        *sourcePixelY = sourcesegCountY;
         char* pixelizedSourcePath = pixelizedPath(argv[3], sourceTotal);
         FILE* pixelizedSourceImage = fopen(pixelizedSourcePath, "wb");
         free(pixelizedSourcePath);
@@ -809,7 +785,12 @@ int main(int argc, char* argv[]) {
     }
   }
   closedir(sourceDirStream);
+  return 0;
+}
 
+void sourceCompare(int targetsegCountX,
+                   int targetsegCountY,
+                   struct AverageColor* targetSegments) {
   for (int targetSegCounter = 0;
        targetSegCounter < targetsegCountX * targetsegCountY;
        targetSegCounter++) {
@@ -842,17 +823,17 @@ int main(int argc, char* argv[]) {
              targetSegments[targetSegCounter].b);
     }
   }
+}
 
-  char* rawImagePath = pngPath(argv[1], argv[4]);
-  FILE* rawMosaic = fopen(rawImagePath, "wb+");
-  free(rawImagePath);
-  if (rawMosaic == NULL) {
-    printf("Unable to open raw mosaic file\n");
-    return 1;
-  }
-
+int createRawMosaic(int sourcePixelX,
+                    int sourcePixelY,
+                    int targetsegCountX,
+                    int targetsegCountY,
+                    int bytesPerPixel,
+                    char** argv,
+                    struct AverageColor* targetSegments,
+                    FILE* rawMosaic) {
   unsigned char* buffer = (unsigned char*)malloc(sourcePixelX * bytesPerPixel);
-
   for (int sourceYNumber = 0; sourceYNumber < targetsegCountY;
        sourceYNumber++) {
     for (int sourceImageYLoc = 0; sourceImageYLoc < sourcePixelY;
@@ -876,15 +857,15 @@ int main(int argc, char* argv[]) {
       }
     }
   }
-
   free(buffer);
   free(targetSegments);
-  fseek(rawMosaic, 0, SEEK_SET);
+  return 0;
+}
 
-  int finalMosaicPathLen = strlen(argv[1]) + strlen(argv[2]) + 12;
-  char* finalMosaicPath = malloc(finalMosaicPathLen);
-  snprintf(finalMosaicPath, finalMosaicPathLen, "%s/finalMosaic.png", argv[5]);
-  FILE* finalMosaic = fopen(finalMosaicPath, "wb");
+void createFinalPNGStart(FILE* finalMosaic,
+                         int finalXDim,
+                         int finalYDim,
+                         int bytesPerPixel) {
   unsigned char finalPNGStartBytes[12];
   finalPNGStartBytes[0] = 0x89;
   finalPNGStartBytes[1] = 0x50;
@@ -898,19 +879,40 @@ int main(int argc, char* argv[]) {
   finalPNGStartBytes[9] = 0;
   finalPNGStartBytes[10] = 0;
   finalPNGStartBytes[11] = 0x0D;
-  unsigned char pngIHDRtype[17];
-  printBuffer(finalPNGStartBytes, 12);
   fwrite(&finalPNGStartBytes, 1, 12, finalMosaic);
-  if (finalMosaic == NULL) {
-    printf("Unable to open final png\n");
-    return 1;
-  }
+  unsigned char pngIHDRtype[17];
   pngIHDRtype[0] = 'I';
   pngIHDRtype[1] = 'H';
   pngIHDRtype[2] = 'D';
   pngIHDRtype[3] = 'R';
-  int finalXDim = sourcePixelX * targetsegCountX;
-  int finalYDim = sourcePixelY * targetsegCountY;
+  struct IHDRChunk finalIHDR;
+  int tempXDim = htonl((uint32_t)finalXDim);
+  memcpy(finalIHDR.width, &tempXDim, 4);
+  int tempYDim = htonl((uint32_t)finalYDim);
+  memcpy(finalIHDR.height, &tempYDim, 4);
+  finalIHDR.bitDepth = 8;
+  finalIHDR.colorType = (bytesPerPixel == 3) ? 2 : 6;
+  memset(finalIHDR.remainingVals, 0, 3);
+  memcpy(&pngIHDRtype[4], &finalIHDR.width, 4);
+  memcpy(&pngIHDRtype[8], &finalIHDR.height, 4);
+  memcpy(&pngIHDRtype[12], &finalIHDR.bitDepth, 1);
+  memcpy(&pngIHDRtype[13], &finalIHDR.colorType, 1);
+  memcpy(&pngIHDRtype[14], &finalIHDR.remainingVals, 3);
+  unsigned int crcIHDR = rc_crc32(0, pngIHDRtype, 17);
+  crcIHDR = htonl(crcIHDR);
+  if (debugMosaic >= 1) {
+    printf("Calculated CRC 0x%x\n", crcIHDR);
+  }
+  fwrite(&pngIHDRtype, 1, 17, finalMosaic);
+  fwrite(&crcIHDR, 1, 4, finalMosaic);
+}
+
+int createFinalPNGIDAT(FILE* finalMosaic,
+                       FILE* rawMosaic,
+                       int finalXDim,
+                       int finalYDim,
+                       int bytesPerPixel,
+                       unsigned int compressedDataLen) {
   int scanlineLen = finalXDim * bytesPerPixel + 1;
   int finalFilterType = 0;
   int ret;
@@ -927,25 +929,6 @@ int main(int argc, char* argv[]) {
     printf("%d\n", ret);
     return 1;
   }
-  struct IHDRChunk finalIHDR;
-  int tempXDim = htonl((uint32_t)finalXDim);
-  memcpy(finalIHDR.width, &tempXDim, 4);
-  int tempYDim = htonl((uint32_t)finalYDim);
-  memcpy(finalIHDR.height, &tempYDim, 4);
-  finalIHDR.bitDepth = 8;
-  finalIHDR.colorType = (bytesPerPixel == 3) ? 2 : 6;
-  memset(finalIHDR.remainingVals, 0, 3);
-  memcpy(&pngIHDRtype[4], &finalIHDR.width, 4);
-  memcpy(&pngIHDRtype[8], &finalIHDR.height, 4);
-  memcpy(&pngIHDRtype[12], &finalIHDR.bitDepth, 1);
-  memcpy(&pngIHDRtype[13], &finalIHDR.colorType, 1);
-  memcpy(&pngIHDRtype[14], &finalIHDR.remainingVals, 3);
-  printBuffer(pngIHDRtype, 17);
-  unsigned int crcIHDR = rc_crc32(0, pngIHDRtype, 17);
-  crcIHDR = htonl(crcIHDR);
-  printf("Calculated CRC 0x%x\n", crcIHDR);
-  fwrite(&pngIHDRtype, 1, 17, finalMosaic);
-  fwrite(&crcIHDR, 1, 4, finalMosaic);
   unsigned char* bufferIDAT = malloc(scanlineLen * finalYDim + 4);
   if (debugMosaic >= 1) {
     printf("Allocating %d bytes for bufferIDAT\n", scanlineLen * finalYDim + 8);
@@ -958,8 +941,6 @@ int main(int argc, char* argv[]) {
   unsigned char* filteredScanlineBuffer = malloc(scanlineLen * finalYDim);
   strm.avail_out = scanlineLen * finalYDim;
   strm.next_out = &bufferIDAT[4];
-  // FILE* filteredMosaic =
-  //    fopen("/Users/aujus.garg/github/filteredFile.raw", "wb");
   for (int scanlineNum = 0; scanlineNum < finalYDim; scanlineNum++) {
     int curBufferLine = scanlineNum % 2;
     int prevBufferLine = (scanlineNum + 1) % 2;
@@ -970,21 +951,6 @@ int main(int argc, char* argv[]) {
         (unsigned char)finalFilterType;
     fread(&filteringBuffer[curBufferLine * scanlineLen + 1], 1, scanlineLen - 1,
           rawMosaic);
-    switch (finalFilterType) {
-      case (1):
-        filterSub(&filteringBuffer[curBufferLine * scanlineLen], finalXDim,
-                  bytesPerPixel);
-        // finalFilterType = 4;
-        break;
-      case (4):
-        filterPaeth(&filteringBuffer[curBufferLine * scanlineLen],
-                    &filteringBuffer[prevBufferLine * scanlineLen], finalXDim,
-                    bytesPerPixel);
-        break;
-    }
-    // fwrite(&filteringBuffer[curBufferLine * scanlineLen], 1, scanlineLen,
-    //       filteredMosaic);
-    // fflush(filteredMosaic);
     if (scanlineNum >= 1) {
       ret = deflate(&strm, Z_NO_FLUSH);
       if (ret != Z_OK) {
@@ -1001,7 +967,6 @@ int main(int argc, char* argv[]) {
   strm.next_in = &filteringBuffer[((finalYDim + 1) % 2) * scanlineLen];
   strm.avail_in = scanlineLen;
   ret = deflate(&strm, Z_FINISH);
-  unsigned int compressedDataLen = scanlineLen * finalYDim - strm.avail_out;
   if (ret != Z_STREAM_END) {
     printf("Failed to compress final buffer... ERRNO %d\n", ret);
     free(bufferIDAT);
@@ -1011,7 +976,10 @@ int main(int argc, char* argv[]) {
     fclose(finalMosaic);
     return 1;
   }
+  compressedDataLen = scanlineLen * finalYDim - strm.avail_out;
   deflateEnd(&strm);
+
+  // Final PNG IDAT written to file
   unsigned char chunkIDATLen[4];
   int tempDataLen = htonl((uint32_t)compressedDataLen);
   memcpy(&chunkIDATLen, &tempDataLen, 4);
@@ -1028,6 +996,10 @@ int main(int argc, char* argv[]) {
   free(filteringBuffer);
   free(filteredScanlineBuffer);
   fclose(rawMosaic);
+  return 0;
+}
+
+void createFinalPNGIEND(FILE* finalMosaic) {
   unsigned char lenIEND[4];
   memset(lenIEND, 0, 4);
   fwrite(&lenIEND, 1, 4, finalMosaic);
@@ -1042,16 +1014,102 @@ int main(int argc, char* argv[]) {
   fwrite(&crcIEND, 1, 4, finalMosaic);
   fflush(finalMosaic);
   fclose(finalMosaic);
-  finalMosaic = fopen(finalMosaicPath, "rb");
-  struct AverageColor total;
-  struct AverageColor* segments;
-  int segCountX;
-  int segCountY;
-  int width;
-  int height;
-  processPNG(finalMosaic, &segments, &total, &segCountX, &segCountY, &width,
-             &height, &bytesPerPixel, true);
-  fclose(finalMosaic);
+}
+
+int main(int argc, char* argv[]) {
+  if (showDebug(argc, argv) != 0) {
+    return 1;
+  }
+
+  // Target image is opened
+  char* imagePath = pngPath(argv[1], argv[2]);
+  FILE* mosaicOriginal = fopen(imagePath, "rb");
+  free(imagePath);
+  if (mosaicOriginal == NULL) {
+    printf("Target file could not be opened\n");
+    return 1;
+  }
+
+  // Variables for first image process set up
+  struct AverageColor* targetSegments = NULL;
+  struct AverageColor targetTotal;
+  int targetsegCountX = 0;
+  int targetsegCountY = 0;
+  int bytesPerPixel = 0;
+  int targetWidth = 0;
+  int targetHeight = 0;
+
+  // First image process
+  if (processPNG(mosaicOriginal, &targetSegments, &targetTotal,
+                 &targetsegCountX, &targetsegCountY, &targetWidth,
+                 &targetHeight, &bytesPerPixel, true) != 0) {
+    fclose(mosaicOriginal);
+    return 1;
+  }
+  fclose(mosaicOriginal);
+
+  // Source image directory opened
+  DIR* sourceDirStream = opendir(argv[1]);
+  if (sourceDirStream == NULL) {
+    printf("Directory not found\n");
+    return 1;
+  }
+
+  // Variables for source images set up
+  int sourcePixelX = 0;
+  int sourcePixelY = 0;
+
+  // Source images processed
+  if (processSourceImages(argv, sourceDirStream, targetSegments, targetWidth,
+                          targetHeight, &sourcePixelX, &sourcePixelY,
+                          bytesPerPixel) != 0) {
+    return 1;
+  }
+
+  // Source images compared to segments of target image and recorded
+  sourceCompare(targetsegCountX, targetsegCountY, targetSegments);
+
+  // Raw mosaic opened
+  char* rawImagePath = pngPath(argv[1], argv[4]);
+  FILE* rawMosaic = fopen(rawImagePath, "wb+");
+  free(rawImagePath);
+  if (rawMosaic == NULL) {
+    printf("Unable to open raw mosaic file\n");
+    return 1;
+  }
+
+  // Raw rendition of mosaic created
+  if (createRawMosaic(sourcePixelX, sourcePixelY, targetsegCountX,
+                      targetsegCountY, bytesPerPixel, argv, targetSegments,
+                      rawMosaic) != 0) {
+    return 1;
+  }
+  fseek(rawMosaic, 0, SEEK_SET);
+
+  // Final PNG opened
+  int finalMosaicPathLen = strlen(argv[5]) + 17;
+  char* finalMosaicPath = malloc(finalMosaicPathLen);
+  snprintf(finalMosaicPath, finalMosaicPathLen, "%s/finalMosaic.png", argv[5]);
+  FILE* finalMosaic = fopen(finalMosaicPath, "wb");
   free(finalMosaicPath);
+  if (finalMosaic == NULL) {
+    printf("Unable to open final png\n");
+    return 1;
+  }
+
+  // Start of final PNG created
+  int finalXDim = sourcePixelX * targetsegCountX;
+  int finalYDim = sourcePixelY * targetsegCountY;
+  createFinalPNGStart(finalMosaic, finalXDim, finalYDim, bytesPerPixel);
+
+  // IDAT chunk of final PNG created
+  unsigned int compressedDataLen;
+  if (createFinalPNGIDAT(finalMosaic, rawMosaic, finalXDim, finalYDim,
+                         bytesPerPixel, compressedDataLen) != 0) {
+    return 1;
+  }
+
+  // IEND chunk of final PNG created
+  createFinalPNGIEND(finalMosaic);
   return 0;
 }
